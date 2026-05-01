@@ -1,0 +1,18 @@
+- SPM is going to need a $6000 cash buffer, maintained outside of rebalance at that level checked daily, provides one month backup of ACH in case of no comms or power loss on payday.  Should not show up in portfolio 5/25 rebalance or portfolio value calculations.
+- Withdrawal needs to happen 4 business days prior to the 15th of each month, which will be ACH day
+
+I need to define the alert structure.
+- Weekly heartbeat message with the 4 core ETF balances and weights, SGOV Buffer balance percentage of full (as set in the config.py) and status (full, drawdown, empty, recovering) just show the cash equivalent not the ticker symbol, Days to upcoming withdrawal payday.  It doesnt need the cash balance, that is part of the mechanics of payday and she won't understand it so it'd just confuse her.
+- Alerts at each stage of the buffer activation - activated, drawdown, empty moving to Fixed Income, FI empty moving to Growth (w/ a percentage of whats remaining of each assett class being drawn down) and finally, Recovery with percentage to full.  There's some duplication here but buffer activation is a big deal and attention grabbing duplication is good.
+- No alert at 5% circuit breaker, she wouldnt understand what stopping rebalancing meant.
+
+- Drawdown buffer (sgov) refill is taken from most overweight first, 8.3% per year starting 60 days after 'Recovery' status is reached.  Gives growth assets more time to build so they're not getting hit with both FI and this refill at the same time.
+- Confirm monthly withdrawals are inflation adjusted.
+- Confirm guard rails are coded, if Portfolio down YoY skip that years inflation adjustment.
+- Confirm rebalances are coded and are taken from most overweight.
+- Evaluate if SP-500 200 day SMA is best way to detect portfolio drop, portfolio is very different than the general market with a very conservative back end grafted onto a highly volatile front end.
+- Config.py contains all the financial money numbers and SPM handles adjusting them gracefully, the mechanics of SPM operation go inside modules.  No hard coded dollar amounts in modules, just config.py
+- Confirm SGOV is not touched unless circuit breaker tripped.
+- Its very difficult to track dividends separately, ensure all dividends are set to "reinvest" refills are done by percentage from overweight.
+- Rebalance and CB check weekly along with heartbeat, payday once a month.
+- Do not use reqMktData with a hardcoded sleep. Use reqTickers(*contracts)
