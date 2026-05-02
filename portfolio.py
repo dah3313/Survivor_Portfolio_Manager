@@ -4,7 +4,8 @@
 #   - Core vs. buffer balance separation
 #   - Drift detection against 50/50 target
 #   - Cash-raising sell order routing
-#   - Rebalance trade generation
+#   - Rebalance trade generation (SELL and T+1 BUY)
+#   - SGOV Buffer Refill mechanics
 
 import logging
 import config
@@ -14,22 +15,14 @@ logger = logging.getLogger('spm.portfolio')
 
 class Portfolio:
     def __init__(self, live_balances: dict):
-        """
-        live_balances: dict of {ticker: market_value_dollars} from IBKRClient.
-        The buffer and cash tickers are present but tracked separately.
-        """
         self.balances = live_balances
 
-        # Core buckets (buffer and cash excluded)
-        self.growth_balance = sum(
-            self.balances.get(t, 0.0) for t in config.TICKERS_GROWTH
-        )
-        self.fi_balance = sum(
-            self.balances.get(t, 0.0) for t in config.TICKERS_FI
-        )
+        # Core buckets
+        self.growth_balance = sum(self.balances.get(t, 0.0) for t in config.TICKERS_GROWTH)
+        self.fi_balance = sum(self.balances.get(t, 0.0) for t in config.TICKERS_FI)
         self.core_balance = self.growth_balance + self.fi_balance
 
-        # Buffer and Cash — tracked but never mixed into core
+        # Buffer and Cash
         self.buffer_balance = self.balances.get(config.TICKER_BUFFER, 0.0)
         self.cash_balance = self.balances.get(config.CASH_TICKER, 0.0)
 
@@ -40,87 +33,140 @@ class Portfolio:
             self.buffer_balance, self.cash_balance,
         )
 
-    # ------------------------------------------------------------------
-    # Drift detection
-    # ------------------------------------------------------------------
     def get_drift(self):
-        """
-        Returns the current growth allocation fraction and whether the
-        5/25 drift bands have been breached.
-
-        Returns: (current_growth_pct, drifted: bool)
-        """
-        if self.core_balance <= 0:
-            return 0.0, False
+        if self.core_balance <= 0: return 0.0, False
 
         current_growth_pct = self.growth_balance / self.core_balance
         target = config.TARGET_ALLOCATION_GROWTH
 
-        # Absolute band: |actual - target| > 5pp
         abs_drift = abs(current_growth_pct - target)
-        abs_breach = abs_drift > config.REBALANCE_BAND_ABSOLUTE
-
-        # Relative band: |actual - target| / target > 25%
         rel_drift = abs_drift / target if target > 0 else 0.0
-        rel_breach = rel_drift > config.REBALANCE_BAND_RELATIVE
 
-        drifted = abs_breach or rel_breach
-
-        logger.info(
-            'Drift check — Growth: %.1f%% (target %.1f%%), '
-            'abs_drift: %.1f pp, rel_drift: %.1f%%, breached: %s',
-            current_growth_pct * 100, target * 100,
-            abs_drift * 100, rel_drift * 100, drifted,
-        )
+        drifted = (abs_drift > config.REBALANCE_BAND_ABSOLUTE) or (rel_drift > config.REBALANCE_BAND_RELATIVE)
         return current_growth_pct, drifted
 
     # ------------------------------------------------------------------
-    # Rebalance trade generation
+    # Rebalance & T+1 Buy Deployment
     # ------------------------------------------------------------------
-    def generate_rebalance_trades(self):
+    def generate_rebalance_trades(self, sgov_target=0.0, refill_active=False):
         """
-        If the 50/50 split has drifted beyond the bands, generate sell/buy
-        orders to restore balance.
+        Generates buy/sell orders. If refill_active is True, the SGOV buffer 
+        gets first claim on any settled cash before the core rebalances.
+        """
+        trades = []
+        deployable_cash = max(0.0, self.cash_balance - config.CASH_BUFFER_TARGET)
 
-        Returns a list of tuples: [('SELL'|'BUY', ticker, dollar_amount), ...]
-        Only generates the SELL side — the cash raised will be used to buy
-        the underweight bucket. This keeps execution simple: sell first,
-        then buy after settlement.
-        """
+        # 1. BUY SIDE — First Claim: SGOV Buffer
+        if refill_active and deployable_cash > 50.0:
+            sgov_deficit = max(0.0, sgov_target - self.buffer_balance)
+            if sgov_deficit > 0:
+                amount_for_sgov = min(deployable_cash, sgov_deficit)
+                trades.append(('BUY', config.TICKER_BUFFER, round(amount_for_sgov, 2)))
+                deployable_cash -= amount_for_sgov
+                logger.info('Deployed $%.2f of settled cash directly to SGOV.', amount_for_sgov)
+
+        # 1. BUY SIDE — Second Claim: Core Rebalancing
+        if deployable_cash > 50.0:
+            ideal_core = self.core_balance + deployable_cash
+            target_growth = ideal_core * config.TARGET_ALLOCATION_GROWTH
+            target_fi = ideal_core * config.TARGET_ALLOCATION_FI
+
+            deficit_growth = target_growth - self.growth_balance
+            deficit_fi = target_fi - self.fi_balance
+
+            deficits = [
+                ('GROWTH', max(0, deficit_growth), config.TICKERS_GROWTH),
+                ('FI', max(0, deficit_fi), config.TICKERS_FI)
+            ]
+            deficits.sort(key=lambda x: x[1], reverse=True)
+
+            for bucket_name, deficit, tickers in deficits:
+                if deployable_cash > 50.0 and deficit > 0:
+                    amount_to_buy = min(deployable_cash, deficit)
+                    split_amount = round(amount_to_buy / len(tickers), 2)
+                    for ticker in tickers:
+                        trades.append(('BUY', ticker, split_amount))
+                    deployable_cash -= amount_to_buy
+
+        # 2. SELL SIDE — Trim overweight positions if drifted
         current_growth_pct, drifted = self.get_drift()
-        if not drifted:
+        if drifted:
+            target_growth = self.core_balance * config.TARGET_ALLOCATION_GROWTH
+            excess_growth = self.growth_balance - target_growth
+
+            if excess_growth > 0:
+                for ticker in config.TICKERS_GROWTH:
+                    weight = self.balances[ticker] / self.growth_balance if self.growth_balance > 0 else 0.0
+                    amount = round(excess_growth * weight, 2)
+                    if amount > 50.0: trades.append(('SELL', ticker, amount))
+            else:
+                excess_fi = abs(excess_growth)
+                for ticker in config.TICKERS_FI:
+                    weight = self.balances[ticker] / self.fi_balance if self.fi_balance > 0 else 0.0
+                    amount = round(excess_fi * weight, 2)
+                    if amount > 50.0: trades.append(('SELL', ticker, amount))
+
+        return trades
+
+    # ------------------------------------------------------------------
+    # Buffer Refill Math
+    # ------------------------------------------------------------------
+    def route_buffer_refill_sells(self, sgov_target, monthly_refill_rate):
+        """
+        Calculates sell orders to raise cash for SGOV.
+        Sources from the overweight bucket first, then 50/50 from the core.
+        """
+        sgov_deficit = max(0.0, sgov_target - self.buffer_balance)
+        if sgov_deficit <= 0: return []
+
+        target_refill = min(sgov_target * monthly_refill_rate, sgov_deficit)
+        
+        # If we already have settled cash sitting idle (e.g. from dividends), 
+        # reduce the amount we need to sell this week.
+        deployable_cash = max(0.0, self.cash_balance - config.CASH_BUFFER_TARGET)
+        cash_to_raise = target_refill - deployable_cash
+
+        if cash_to_raise < 50.0:
             return []
 
-        target_growth = self.core_balance * config.TARGET_ALLOCATION_GROWTH
-        excess_growth = self.growth_balance - target_growth
-
         trades = []
+        remaining = cash_to_raise
 
-        if excess_growth > 0:
-            # Growth is overweight — sell proportionally from growth tickers
-            # and the cash will be deployed into FI on the next cycle
+        # Step 1: Pull from the overweight side of the core
+        target_growth = self.core_balance * config.TARGET_ALLOCATION_GROWTH
+        target_fi = self.core_balance * config.TARGET_ALLOCATION_FI
+
+        excess_growth = max(0.0, self.growth_balance - target_growth)
+        excess_fi = max(0.0, self.fi_balance - target_fi)
+
+        if excess_growth > 0 and remaining > 0:
+            amount = min(excess_growth, remaining)
             for ticker in config.TICKERS_GROWTH:
-                weight = (
-                    self.balances[ticker] / self.growth_balance
-                    if self.growth_balance > 0 else 0.0
-                )
-                amount = abs(excess_growth) * weight
-                if amount > 0:
-                    trades.append(('SELL', ticker, amount))
-        else:
-            # FI is overweight — sell proportionally from FI tickers
-            excess_fi = abs(excess_growth)  # symmetric
-            for ticker in config.TICKERS_FI:
-                weight = (
-                    self.balances[ticker] / self.fi_balance
-                    if self.fi_balance > 0 else 0.0
-                )
-                amount = excess_fi * weight
-                if amount > 0:
-                    trades.append(('SELL', ticker, amount))
+                weight = self.balances.get(ticker, 0) / self.growth_balance
+                trades.append((ticker, round(amount * weight, 2)))
+            remaining -= amount
 
-        logger.info('Rebalance trades: %s', trades)
-        return trades
+        if excess_fi > 0 and remaining > 0:
+            amount = min(excess_fi, remaining)
+            for ticker in config.TICKERS_FI:
+                weight = self.balances.get(ticker, 0) / self.fi_balance
+                trades.append((ticker, round(amount * weight, 2)))
+            remaining -= amount
+
+        # Step 2: If we STILL need cash, pull exactly 50/50 from both buckets
+        if remaining > 1.0:
+            pull_per_bucket = remaining / 2.0
+            
+            for ticker in config.TICKERS_GROWTH:
+                weight = self.balances.get(ticker, 0) / self.growth_balance if self.growth_balance else 0
+                trades.append((ticker, round(pull_per_bucket * weight, 2)))
+                
+            for ticker in config.TICKERS_FI:
+                weight = self.balances.get(ticker, 0) / self.fi_balance if self.fi_balance else 0
+                trades.append((ticker, round(pull_per_bucket * weight, 2)))
+
+        logger.info('Buffer Refill SELL targets generated to raise $%.2f: %s', cash_to_raise, trades)
+        return [(t, a) for t, a in trades if a > 0.50]
 
     # ------------------------------------------------------------------
     # Cash-raising for monthly withdrawal
@@ -156,7 +202,7 @@ class Portfolio:
                     self.balances[ticker] / self.fi_balance
                     if self.fi_balance > 0 else 0.0
                 )
-                amount = amount_from_fi * weight
+                amount = round(amount_from_fi * weight, 2)
                 if amount > 0:
                     sell_orders.append((ticker, amount))
             remaining -= amount_from_fi
@@ -169,7 +215,7 @@ class Portfolio:
                     self.balances[ticker] / self.growth_balance
                     if self.growth_balance > 0 else 0.0
                 )
-                amount = amount_from_growth * weight
+                amount = round(amount_from_growth * weight, 2)
                 if amount > 0:
                     sell_orders.append((ticker, amount))
             remaining -= amount_from_growth

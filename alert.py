@@ -44,7 +44,7 @@ class AlertManager:
         body_short = f'{error_message} Check email for details.'
         self._dispatch(subject, body_full, body_short)
 
-def send_heartbeat(self, core_balances, weights, sgov_pct, sgov_status, days_to_payday):
+   def send_heartbeat(self, core_balances, weights, sgov_pct, sgov_status, days_to_payday):
         """
         Formats the weekly heartbeat message. Excludes cash balance.
         """

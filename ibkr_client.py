@@ -74,41 +74,75 @@ class IBKRClient:
         return state
 
     # ------------------------------------------------------------------
-    # SMA — returns (current_price, sma_value) for a given symbol
+    # SMA — returns (current_price, sma_value) for a synthetic index
     # ------------------------------------------------------------------
-    def get_price_and_sma(self, symbol, duration_str, bar_size):
+    def get_synthetic_price_and_sma(self, symbols: list, duration_str, bar_size):
         """
-        Fetches weekly historical bars for `symbol` and returns a tuple:
-            (current_price, sma_value)
+        Fetches historical bars for multiple symbols and blends them into
+        an equal-weight synthetic index. Returns a tuple:
+            (synthetic_current_price, synthetic_sma_value)
 
         Both values are in the same unit (price-per-share) so the caller
         can safely compute a percentage drawdown.
 
-        Returns (None, None) if data is unavailable.
+        Returns (None, None) if data is unavailable or dates do not align.
         """
-        contract = Stock(symbol, 'SMART', 'USD')
-        self.ib.qualifyContracts(contract)
-
-        bars = self.ib.reqHistoricalData(
-            contract,
-            endDateTime='',
-            durationStr=duration_str,
-            barSizeSetting=bar_size,
-            whatToShow='TRADES',
-            useRTH=True,
-            formatDate=1,
-        )
-
-        if not bars:
-            logger.error('No historical bars returned for %s', symbol)
+        if not symbols:
+            logger.error('No symbols provided for synthetic index')
             return None, None
 
-        sma_value = sum(b.close for b in bars) / len(bars)
-        current_price = bars[-1].close  # most recent bar's close
+        all_bars = {}
+        for symbol in symbols:
+            contract = Stock(symbol, 'SMART', 'USD')
+            self.ib.qualifyContracts(contract)
+
+            bars = self.ib.reqHistoricalData(
+                contract,
+                endDateTime='',
+                durationStr=duration_str,
+                barSizeSetting=bar_size,
+                whatToShow='TRADES',
+                useRTH=True,
+                formatDate=1,
+            )
+
+            if not bars:
+                logger.error('No historical bars returned for %s', symbol)
+                return None, None
+            all_bars[symbol] = bars
+
+        # Align by date to ensure the math is accurate even if a fund
+        # has a missing day/week of trading.
+        date_map = {}
+        for symbol, bars in all_bars.items():
+            for bar in bars:
+                d = bar.date
+                if d not in date_map:
+                    date_map[d] = {}
+                date_map[d][symbol] = bar.close
+
+        # Filter to dates where we have a closing price for EVERY symbol
+        valid_dates = [d for d, prices in date_map.items() if len(prices) == len(symbols)]
+        valid_dates.sort()
+
+        if not valid_dates:
+            logger.error('No overlapping trading dates found for %s', symbols)
+            return None, None
+
+        # Build the synthetic index (equal weight)
+        weight = 1.0 / len(symbols)
+        synthetic_history = []
+        for d in valid_dates:
+            prices = date_map[d]
+            synthetic_close = sum(prices[sym] * weight for sym in symbols)
+            synthetic_history.append(synthetic_close)
+
+        sma_value = sum(synthetic_history) / len(synthetic_history)
+        current_price = synthetic_history[-1]  # Most recent valid bar
 
         logger.info(
-            '%s — current: %.2f, SMA(%d bars): %.2f',
-            symbol, current_price, len(bars), sma_value,
+            'Synthetic Index %s — current: %.2f, SMA(%d bars): %.2f',
+            symbols, current_price, len(synthetic_history), sma_value,
         )
         return current_price, sma_value
 
@@ -161,4 +195,38 @@ class IBKRClient:
                 'ORDER INCOMPLETE: %s status=%s after %ds',
                 symbol, trade.orderStatus.status, elapsed,
             )
+        return filled
+
+    def buy_dollar_amount(self, symbol, dollar_amount, dry_run=False):
+        """
+        Submits a market buy order using fractional shares (cashQty).
+        """
+        if dollar_amount <= 0:
+            return False
+
+        if dollar_amount > config.MAX_SINGLE_TRADE_DOLLARS:
+            logger.error('SAFETY CAP: Buy order %s capped at max.', symbol)
+            dollar_amount = config.MAX_SINGLE_TRADE_DOLLARS
+
+        if dry_run:
+            logger.info('[DRY RUN] Would BUY %s for $%.2f', symbol, dollar_amount)
+            return True
+
+        contract = Stock(symbol, 'SMART', 'USD')
+        self.ib.qualifyContracts(contract)
+
+        order = MarketOrder('BUY', totalQuantity=0, cashQty=dollar_amount)
+        trade = self.ib.placeOrder(contract, order)
+
+        timeout = 60
+        elapsed = 0
+        while not trade.isDone() and elapsed < timeout:
+            self.ib.waitOnUpdate(timeout=5)
+            elapsed += 5
+
+        filled = trade.orderStatus.status == 'Filled'
+        if filled:
+            logger.info('FILLED: Bought $%.2f of %s', dollar_amount, symbol)
+        else:
+            logger.error('ORDER INCOMPLETE: %s status=%s', symbol, trade.orderStatus.status)
         return filled

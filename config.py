@@ -30,11 +30,11 @@ TARGET_ALLOCATION_FI = 0.50
 # --- Withdrawal ---
 BASELINE_MONTHLY_WITHDRAWAL = 5_000.0
 
-# --- Proxy Index for SMA Calculations ---
-# We compare the proxy's current price to its own SMA to gauge market regime.
-# This avoids the apples-to-oranges bug of comparing portfolio dollars to
-# an index price.
-PROXY_INDEX_TICKER = 'SPY'
+# --- Synthetic Proxy Index for SMA Calculations ---
+# We compare the current blended price of the Growth bucket to its own SMA 
+# to gauge market regime. This ties the circuit breakers directly to the 
+# assets taking the risk.
+SYNTHETIC_INDEX_TICKERS = TICKERS_GROWTH
 
 # --- Rebalancing Drift Bands (5/25 Rule) ---
 # Checked weekly. Rebalancing is halted when the 200-day SMA circuit breaker
@@ -63,12 +63,12 @@ BUFFER_REFILL_DELAY_DAYS = 60
 BUFFER_REFILL_ANNUAL_RATE = 0.083
 
 # --- Circuit Breaker Thresholds ---
-# These compare SPY's current price vs. its own 200-day SMA.
+# These compare the Synthetic Growth Index's current price vs. its own 200-day SMA.
 # -5%: halt all rebalancing
 HALT_REBALANCE_THRESHOLD = -0.05
 # -7.5%: shift monthly withdrawals from FI to SGOV buffer
 SHY_TRANSITION_THRESHOLD = -0.075
-# Recovery: exit crisis when SPY is 3% above the price at which we entered
+# Recovery: exit crisis when the index is 3% above the price at which we entered
 RECOVERY_ABOVE_TRANSITION = 0.03
 
 # --- Inflation Guardrails (Annual, November) ---

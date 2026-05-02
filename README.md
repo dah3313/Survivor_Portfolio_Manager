@@ -2,248 +2,166 @@
 
 ## Purpose
 
-The Survivor Portfolio Manager is an automated income-generation system for a Roth IRA held at Interactive Brokers. It is designed to provide a surviving spouse with reliable monthly income from an investment portfolio, requiring zero manual intervention after activation.
+The Survivor Portfolio Manager is an automated income-generation system for a Roth IRA held at Interactive Brokers. It is designed to provide a surviving spouse with reliable monthly income from an investment portfolio, requiring zero software intervention after activation.
 
 The portfolio transitions from a growth-oriented strategy (managed by a separate program, the IPM) into a structured withdrawal system. The SPM sells assets on a fixed schedule, raises cash for monthly ACH transfers, and protects the portfolio during market downturns using a crisis buffer and rules-based circuit breakers.
 
-**This program manages real money. Every design decision prioritizes safety and auditability over cleverness.**
+**This program manages real money. Every design decision prioritizes safety, physical security, and auditability over cleverness.**
 
 ---
 
 ## How It Works (Plain English)
 
-The portfolio holds four funds split into two buckets, plus a cash-like safety buffer:
+The portfolio holds four funds split into two core buckets, plus a cash-like safety buffer:
 
 - **Growth** (50% of core): FBCG and AVUV — equity funds that drive long-term appreciation.
 - **Fixed Income** (50% of core): PIMIX and JPIE — bond funds that generate yield and provide relative stability.
 - **Crisis Buffer** (separate): SGOV — a short-term Treasury fund holding roughly $72,000, kept outside the core so it doesn't interfere with balance calculations.
 
-Each month, the program sells enough from the Fixed Income bucket to cover the $5,000 withdrawal (adjusted annually for inflation). The cash settles in the brokerage account and IBKR's automated ACH system transfers it to the linked bank account.
+**Dividends:** All dividends are configured at the broker level to automatically reinvest (DRIP). The SPM does not micromanage dividend sweeps.
 
-If the stock market drops significantly (measured by the S&P 500 falling below its 200-day moving average), the program shifts withdrawals to the SGOV buffer instead, leaving the core portfolio untouched so it can recover. Once the market recovers, withdrawals return to Fixed Income and dividends refill the buffer.
+Each month, the program sells enough from the Fixed Income bucket to cover the withdrawal (adjusted annually for inflation). The cash settles in the brokerage account and IBKR's automated ACH system transfers it to the linked bank account.
+
+**The Circuit Breaker:** The system calculates a "Synthetic Index" mirroring the exact daily price of the Growth bucket (FBCG + AVUV). If this index drops significantly below its 200-day moving average, the program shifts withdrawals to the SGOV buffer instead, leaving the core portfolio untouched so it can recover. Once the market recovers, withdrawals return to Fixed Income.
 
 Every November, the program checks whether to apply an inflation raise and whether the Growth bucket earned a one-time bonus payout from an exceptionally strong year.
 
 ---
 
-## Architecture
+## Architecture & The Hardware Token
 
-```
+The SPM and the IPM (Investment Portfolio Manager) are hosted on parallel, dedicated Linux mini-PCs. They are stateless, executing via `systemd` timers rather than continuous loops to survive broker API resets and power outages.
+
+The entire system is secured by a **Hardware Token Protocol** (a physical USB drive mounted at `/mnt/usb/` containing `spm_token.json`). 
+* The active IPM writes the inflation-adjusted withdrawal baseline to this token continuously. 
+* The dormant SPM requires this token to activate live trading. 
+
 ┌─────────────────────────────────────────────────┐
 │  main.py — Orchestrator                         │
-│  Loads state, coordinates all modules, logs     │
-│  every decision to an append-only audit trail.  │
+│  Validates USB Token, coordinates modules,      │
+│  and writes to an append-only audit trail.      │
 ├────────────┬────────────┬───────────┬───────────┤
 │ strategy.py│portfolio.py│ibkr_client│  alert.py │
-│ Market     │ Balance    │ IBKR API  │ Email/SMS │
-│ regime     │ tracking,  │ connection│ alerts    │
-│ evaluation │ drift,     │ prices,   │           │
-│            │ sell-order │ orders    │           │
-│            │ routing    │           │           │
+│ Synthetic  │ Balance    │ IBKR API  │ Email/SMS │
+│ index eval,│ tracking,  │ routing   │ heartbeat │
+│ safeguards │ T+1 trades │           │ alerts    │
 ├────────────┴────────────┴───────────┴───────────┤
 │  config.py — All constants, thresholds, tickers │
 └─────────────────────────────────────────────────┘
-```
 
----
+The Switchover Protocol (In Case of husband passing)
 
-## Module Reference
+There are no scripts to run, no SSH keys to manage, and no remote desktops to navigate. The switchover is entirely physical.
 
-### config.py
+    Locate the active IPM mini-PC (the black box) and the dormant SPM mini-PC (the silver box). Both should be powered on and connected to the internet.
 
-All tunable parameters in one place. Nothing is hardcoded elsewhere. Key settings:
+    Unplug the USB thumb drive from the IPM box.
 
-- **Portfolio tickers and target allocation** (50/50 Growth vs. Fixed Income)
-- **SGOV buffer target** ($72,000)
-- **Withdrawal baseline** ($5,000/month)
-- **Circuit breaker thresholds** (-5% halt rebalancing, -7.5% enter crisis, +3% recovery)
-- **Inflation rate** (3% annual, frozen if market is down ≥5% vs. 12-month SMA)
-- **November bonus rules** (20% of excess above 25% YoY growth return)
-- **Safety cap** ($15,000 max single trade — prevents bugs from liquidating the account)
-- **File paths** for logs, audit trail, and persistent state
+    Plug the USB thumb drive into the SPM box.
 
-### ibkr_client.py
+What happens under the hood:
 
-Handles all communication with Interactive Brokers via the `ib_insync` library.
+    The IPM (Primary Porfolio Manager) Fails Closed: At its next scheduled run, the IPM will notice the USB token is missing. It will instantly crash, halting all growth-phase trades and silencing its weekly heartbeat text.
 
-- `get_portfolio_state()` — Returns a dictionary of current market values for every tracked ticker. SGOV is included but the caller keeps it separate from core calculations.
-- `get_price_and_sma(symbol, duration, bar_size)` — Returns both the current price and the SMA of the same symbol. This is the fix for the critical bug in the original code, which compared portfolio dollar values against an index share price.
-- `sell_dollar_amount(symbol, amount, dry_run)` — Submits a fractional-share market sell order using IBKR's `cashQty` parameter. Enforces the safety cap. In dry-run mode, logs the order without executing.
+    The SPM Latches Live: At its next scheduled run, the SPM will detect the USB token. It reads the exact, current inflation-adjusted withdrawal amount from the token, saves it to its permanent internal state (is_live_latched = True), and immediately takes over management of the Roth IRA.
 
-### strategy.py
 
-Pure evaluation logic — no side effects, no file I/O. Receives market data, returns decisions.
+Module Reference
 
-- `evaluate_circuit_breakers(proxy_price, proxy_sma_200)` — Compares SPY's current price to its own 200-day SMA. Returns two flags: whether to halt rebalancing (-5%) and whether to force withdrawals from the buffer (-7.5%). Tracks the transition price so recovery can be calculated as +3% above the entry point.
-- `evaluate_inflation_freeze(proxy_price, proxy_sma_12mo)` — Should the annual inflation raise be skipped? Compares SPY price to its 12-month SMA.
-- `evaluate_november_bonus(current_growth, prev_year_growth)` — Calculates the one-time bonus if the Growth bucket returned more than 25% YoY.
+config.py
 
-### portfolio.py
+All tunable parameters. Nothing is hardcoded elsewhere.
+
+    Synthetic Index Tickers: Ties the circuit breakers directly to the assets taking the risk (FBCG/AVUV).
+
+    SGOV buffer target: ($72,000)
+
+    Withdrawal baseline: ($5,000/month)
+
+    Circuit breaker thresholds: (-5% halt rebalancing, -7.5% enter crisis, +3% recovery)
+
+    Safety cap: ($15,000 max single trade — prevents bugs from liquidating the account)
+
+ibkr_client.py
+
+Handles all communication with Interactive Brokers via the ib_insync library. Includes network timeout handling.
+
+    get_synthetic_price_and_sma() — Fetches historical bars for multiple tickers, securely aligns them by valid trading dates, and calculates the blended price and SMA.
+
+    sell_dollar_amount() / buy_dollar_amount() — Submits fractional-share market orders. Enforces the $15k safety cap.
+
+strategy.py
+
+Pure evaluation logic — no side effects. Receives synthetic market data, returns decisions for circuit breakers, inflation freezes, and November bonuses.
+portfolio.py
 
 Tracks live balances and generates trade instructions.
 
-- `get_drift()` — Computes the current Growth allocation and checks it against the 5/25 drift bands (5 percentage-point absolute, 25% relative).
-- `generate_rebalance_trades()` — If drift is detected and rebalancing is not halted, calculates the sell orders needed to restore the 50/50 split. Currently generates sell-side only; the cash is deployed on a subsequent run.
-- `route_cash_raising(target, force_buffer)` — The withdrawal hierarchy: SGOV → Fixed Income → Growth. Returns a list of (ticker, dollar_amount) sell orders.
+    generate_rebalance_trades() — Generates SELL orders if the 50/50 allocation drifts beyond the 5/25 safety bands. Generates BUY orders to deploy settled cash (T+1) into the underweight bucket.
 
-### alert.py
+    route_cash_raising() — The withdrawal hierarchy: SGOV → Fixed Income → Growth.
 
-Sends notifications via email (full detail) and SMS (short summary via Verizon's email-to-text gateway).
+alert.py
 
-- `send_success()` — Called after a clean run.
-- `send_error()` — Called if the program crashes. Email gets the full traceback; SMS gets a one-liner.
-- `send_heartbeat()` — Confirms the host machine is alive. Run on a separate timer so that if SPM itself fails to execute, you still know the machine is up.
-- Credentials are loaded from environment variables, never stored in code.
+Sends notifications via email (full detail) and SMS (short summary via email-to-text gateway). Includes the critical 6-hour send_heartbeat() to act as a dead-man's switch if the host loses power.
+main.py
 
-### main.py
+The orchestrator.
 
-The orchestrator. Runs the full pipeline in order:
+    Evaluates the USB Hardware Token (Latching logic).
 
-1. Load persistent state from disk
-2. Connect to IBKR and snapshot portfolio balances
-3. Fetch SPY price and SMA data
-4. Evaluate circuit breakers
-5. Check drift and generate rebalance trades (if not halted)
-6. In November: evaluate inflation adjustment and bonus
-7. Calculate and execute monthly cash-raising sells
-8. Save state, write audit log, send alert
+    Connects to IBKR and snapshots portfolio balances.
 
-Supports `--dry-run` (full logic, no trades) and `--heartbeat` (send alive signal and exit).
+    Fetches synthetic SMA data.
 
----
+    Evaluates circuit breakers.
 
-## Execution Schedule
+    Executes T+1 rebalance buys and drift-correction sells.
 
-The program is run by `systemd` timers on a dedicated Linux host.
+    Calculates and executes monthly cash-raising sells.
 
-| Timer | Frequency | Command | Purpose |
-|-------|-----------|---------|---------|
-| Weekly check | Every Monday 9:30 AM ET | `python main.py --dry-run` | Evaluate drift and circuit breakers, log state. No trades. |
-| Monthly withdrawal | 3 business days before ACH date | `python main.py` | Raise cash for the monthly transfer. Executes trades. |
-| Heartbeat | Every 6 hours | `python main.py --heartbeat` | Confirm the host is alive. |
+    Saves state, writes audit log, sends alerts.
 
-The weekly dry-run ensures you always have fresh SMA data and drift status in the audit log even in months where no action is needed.
+Execution Schedule
 
----
+The program is run by systemd timers on a dedicated Linux host.
+Timer	Frequency	Command	Purpose
+Weekly check	Every Monday 9:30 AM ET	python main.py	Evaluate drift, circuit breakers, and deploy settled T+1 cash.
+Monthly withdrawal	3 business days before ACH date	python main.py	Raise cash for the monthly transfer.
+Heartbeat	Every 6 hours	python main.py --heartbeat	Confirm the host is alive and report Latch Status.
 
-## Deployment
+Note: Without the USB token inserted, the Weekly and Monthly runs default to Dry-Run (paper) mode.
+Deployment & State Integrity
+Directory Structure
+Plaintext
 
-### Prerequisites
-
-- Python 3.10+
-- `ib_insync` (`pip install ib_insync`)
-- IB Gateway running on the same host (port 4001 for live, 4002 for paper)
-- IBKR account with API access enabled and the Roth IRA linked
-
-### Environment Variables
-
-Set these in the systemd unit file or a sourced env file (never in the code):
-
-```bash
-export SPM_SMTP_SERVER="smtp.gmail.com"
-export SPM_SMTP_PORT="587"
-export SPM_EMAIL_SENDER="your_bot_email@gmail.com"
-export SPM_EMAIL_PASSWORD="your_gmail_app_password"
-export SPM_EMAIL_RECIPIENT="your_personal_email@gmail.com"
-export SPM_SMS_GATEWAY="5551234567@vtext.com"
-```
-
-### Directory Structure
-
-```
 /home/spm/
-├── spm/
-│   ├── config.py
-│   ├── main.py
-│   ├── strategy.py
-│   ├── portfolio.py
-│   ├── ibkr_client.py
-│   └── alert.py
-├── spm_state.json          ← persistent state between runs
+├── spm/                      ← Source code
+├── spm_state.json            ← Persistent internal state
 /var/log/spm/
-├── spm.log                 ← human-readable log
-└── spm_audit.jsonl         ← structured audit trail (append-only)
-```
+├── spm.log                   ← Human-readable log
+└── spm_audit.jsonl           ← Structured audit trail
+/mnt/usb/
+└── spm_token.json            ← The Hardware Token
 
-### First Run
+Safety Features
 
-```bash
-# Paper trading first — always
-# Set IBKR_PORT=4002 in config.py for paper trading
+    The Hardware Latch: The system defaults to inert paper-trading. It must be physically authorized via USB to execute real trades.
 
-# Dry run to verify connectivity and logic
-python main.py --dry-run
+    Max Single Trade Cap ($15,000): No single order can exceed this amount.
 
-# Check the audit log
-cat /var/log/spm/spm_audit.jsonl | python -m json.tool
+    Fail Closed Architecture: If IBKR is offline, or the machine loses power, the script crashes cleanly and does nothing. The $6,000 baseline cash buffer in the account absorbs the impact of missed runs for the automated ACH pull.
 
-# Verify alerts
-python main.py --heartbeat
-```
+    Structured Audit Trail: Every run appends timestamped JSON records covering portfolio snapshots, SMA values, trade orders, and state changes.
 
----
+What's Not Yet Built
 
-## IPM → SPM Switchover
+    Systemd unit files and timers: The Linux service definitions for both SPM and the heartbeat timer.
 
-The IPM (Investment Portfolio Manager) and SPM manage the same Roth IRA holdings at IBKR. Only one runs at a time.
+    Headless Gateway Wrapper: Configuration of IBC (IBController) to handle Interactive Brokers' mandatory 24-hour resets and headless authentication.
 
-A desktop shortcut on the Windows machine opens a remote session to the Linux host and runs a switchover script that:
+Financial Context
 
-1. Stops the IPM systemd timers
-2. Disables the IPM service
-3. Enables and starts the SPM systemd timers
-4. Sends a confirmation alert: "SPM is now active"
-
-The switchover script will be written after both portfolio managers are complete.
-
----
-
-## Redundancy
-
-Two fanless mini-PCs run in parallel with daily state synchronization. If the primary host goes silent (no heartbeat for 24 hours), the secondary takes over automatically. The sync mechanism and failover logic will be designed after the core software is stable.
-
----
-
-## Safety Features
-
-- **Max single trade cap** ($15,000): No single sell order can exceed this amount, regardless of what the logic calculates. A bug that tries to sell $350,000 will be capped and logged as an error.
-- **Dry-run mode**: The full pipeline runs and logs every decision, but no orders are submitted to IBKR.
-- **Structured audit trail**: Every run appends timestamped JSON records covering portfolio snapshots, SMA values, circuit breaker results, trade orders, and state changes. This is the forensic record.
-- **Alert on failure**: If the program crashes for any reason, an error alert is sent with the full traceback. Alert failures themselves never crash the program.
-- **Heartbeat monitoring**: A separate timer confirms the host is alive, independent of whether SPM ran successfully.
-- **Buffer isolation**: SGOV is tracked but excluded from core balance and drift calculations so it never triggers false rebalancing.
-
----
-
-## Audit Trail Format
-
-Each line in `spm_audit.jsonl` is a standalone JSON object:
-
-```json
-{"timestamp": "2026-04-30T09:31:00", "event": "run_start", "dry_run": false, "month": 4}
-{"timestamp": "2026-04-30T09:31:02", "event": "portfolio_snapshot", "core_balance": 700000.0, "growth_balance": 350000.0, "fi_balance": 350000.0, "buffer_balance": 72000.0}
-{"timestamp": "2026-04-30T09:31:03", "event": "sma_data", "proxy": "SPY", "price_200": 520.50, "sma_200": 510.30}
-{"timestamp": "2026-04-30T09:31:03", "event": "circuit_breakers", "halt_rebalancing": false, "force_buffer": false}
-{"timestamp": "2026-04-30T09:31:04", "event": "cash_raising", "target": 5000.0, "force_buffer": false, "orders": [["PIMIX", 3125.0], ["JPIE", 1875.0]]}
-{"timestamp": "2026-04-30T09:31:06", "event": "run_complete"}
-```
-
-This format is human-readable, machine-parseable, and trivially searchable with `grep` or `jq`.
-
----
-
-## What's Not Yet Built
-
-- **Buy-side rebalancing**: The sell side generates cash to restore 50/50 balance, but the code to deploy that cash into the underweight bucket is not yet written.
-- **Dividend capture and routing**: Post-crisis, dividends from all four core funds should refill the SGOV buffer. This requires subscribing to IBKR dividend events or polling account transactions.
-- **Systemd unit files and timers**: The service definitions for both SPM and the heartbeat timer.
-- **IPM ↔ SPM switchover script**: The one-click script that stops one manager and starts the other.
-- **Secondary host failover**: The sync and automatic promotion logic for the redundant mini-PC.
-
----
-
-## Financial Context
-
-This system exists because military retirement pay and VA disability benefits do not transfer to a surviving spouse. If the servicemember dies before Social Security eligibility, the spouse loses roughly $4,500/month in household income. The SPM converts a Roth IRA into a structured income floor to bridge that gap until Social Security survivor benefits begin, and to supplement them afterward.
+The SPM converts a Roth IRA into a structured income floor to bridge the gap provide by the husbands income after his death until Social Security survivor benefits begin, and to supplement them afterward.
 
 The portfolio is not an experiment. It is a lifeline.

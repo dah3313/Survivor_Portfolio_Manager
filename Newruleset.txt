@@ -1,0 +1,97 @@
+Starting conditions
+portfolio size $700000
+Portfolio income generator allocation 30% FBCG, 30% AVUV, 25% PIMIX, 15% JPIE
+$72000 SHY buffer in same account but outside of core income generator.
+$5000 monthly withdrawal
+Logic
+5/25 rebalancing checked once a week using a 200 day SMA lookback
+All withdrawals from PIMIX and JPIE proportionally
+When Core portfolio down 5% via 200 day SMA lookback stop rebalancing
+When core portfolio down 7.5% via 200 day SMA lookback transition monthly withdrawals to SHY, when core portfolio recovers to 3% above transition point move withdrawals back to PIMIX/JPIE and begin slowly refilling SHY buffer using dividends.
+Even after transition to SHY buffer withdrawals use dividends from all funds to assist with monthly withdrawal, if SHY buffer fully funded buy shares in all core portfolio assets proportionally.
+
+
+------------------------------------------------------------------------------------------------
+
+Here is the bulleted reference sheet for the complete withdrawal and rebalancing ruleset:
+
+Initial State & Targets
+Core Portfolio: $700,000 baseline.
+
+Target Allocation: 50% Growth (FBCG/AVUV) / 50% Fixed Income (PIMIX/JPIE).
+
+Crisis Buffer: $72,000 (SHY), held alongside but outside the core.
+
+Initial Withdrawal: $5,000/month (subject to inflation adjustments).
+
+1. Withdrawal Hierarchy (Executed Monthly)
+Primary (Normal Operations): Withdrawals are pulled proportionally from the Fixed Income bucket.
+
+Crisis Mode (200-day SMA Tripped): Withdrawals are pulled from the SHY buffer to protect core assets.
+
+Fallback 1 (SHY Depleted): Withdrawals revert to Fixed Income.
+
+Fallback 2 (Last Resort): Withdrawals are pulled from the Growth bucket only if SHY and Fixed Income are entirely exhausted.
+
+2. Crisis Management (Evaluated Weekly via 200-day SMA)
+Halt Rebalance: If the Core Portfolio falls 5% below the 200-day SMA, all standard 5/25 rebalancing is frozen.
+
+Enter Crisis Mode: If the Core Portfolio falls 7.5% below the 200-day SMA, the monthly withdrawal sequence shifts to the SHY buffer.
+
+Exit Crisis Mode: The system exits Crisis Mode only when the Core Portfolio recovers to 3% above the original transition price. Once exited, standard Fixed Income withdrawals resume, and dividends begin slowly refilling the SHY buffer.
+
+3. Annual Adjustments (Evaluated Once a Year in November)
+Sequence of Operations: 1. Check Inflation Freeze.
+2. Check Special Dividend.
+3. Process standard rebalance (if not halted by 200-day SMA).
+
+The Inflation Freeze (12-month SMA): Check the Core Portfolio against a 12-month (52-week) SMA. If the core is down 5% or more, skip the annual standard inflation increase to the monthly withdrawal amount.
+
+The Special Dividend (YoY Growth Return): Check the 1-year return of the Growth bucket (FBCG/AVUV) against the previous November.
+
+Trigger: Growth bucket YoY return is > 25%.
+
+Action: Extract 20% of the excess gains (the profit above the 25% threshold) as a one-time cash bonus, leaving the remainder to be swept into Fixed Income via standard rebalancing.
+
+4. Standard Rebalancing (Evaluated Weekly)
+Prerequisite: Must not be halted by the 200-day SMA circuit breaker.
+
+Trigger: Evaluates the 50/50 Growth vs. Fixed Income split. Triggers if an asset class drifts beyond a 5% absolute boundary or a 25% relative boundary.
+
+Action: Sweeps excess capital to restore the 50/50 balance (typically capturing Growth profits to continuously rebuild the Fixed Income runway).
+
+-----------------------------------------------------------------------------------------------------
+
+The Cash Raising Execution Logic
+1. The Trigger & Target
+
+When to run: The script should execute this function a few days prior to the web-portal's scheduled ACH pull. This guarantees the trades have cleared the T+1 settlement period and the cash is fully settled in the account.
+
+The Target Amount: The baseline target is $5,000 (adjusted for the standard annual inflation). In November, the target becomes the baseline plus the calculated Special Dividend bonus.
+
+2. The Sourcing Hierarchy (Where to Pull From)
+The program will evaluate the current market state (via the strategy.py circuit breakers) and the current account balances to route the SELL orders.
+
+Path A: Crisis Mode (200-day SMA tripped)
+
+Action: Sell the target dollar amount from the SHY position.
+
+Fallback: If the SHY balance is less than the target amount, sell all remaining SHY, and sell the difference proportionally from the Fixed Income bucket (PIMIX/JPIE).
+
+Path B: Normal Operations (SMA healthy)
+
+Action: Sell the target dollar amount proportionally from the Fixed Income bucket (PIMIX/JPIE).
+
+Fallback: If the Fixed Income bucket is somehow fully depleted (a catastrophic scenario), pull the remainder from the Growth bucket (FBCG/AVUV) as an absolute last resort.
+
+3. The Order Execution
+
+Calculate the exact dollar amount needed from each specific ticker based on the active Path.
+
+Submit a SELL order using the CashQty parameter (fractional shares based on dollar amount).
+
+Wait for the OrderStatus to confirm Filled.
+
+Log the exact cash amount raised and the source tickers.
+
+By giving Claude this specific layout, it will know exactly how to map the boolean triggers from your strategy.py module to the live SELL orders in your ibkr_client.py module, leaving the heavy lifting of the actual bank transfer entirely to IBKR's automated backend.
