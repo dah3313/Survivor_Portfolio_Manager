@@ -114,7 +114,7 @@ class Portfolio:
     def route_buffer_refill_sells(self, sgov_target, monthly_refill_rate):
         """
         Calculates sell orders to raise cash for SGOV.
-        Sources from the overweight bucket first, then 50/50 from the core.
+        Sources from the overweight bucket first, then proportionally from Growth.
         """
         sgov_deficit = max(0.0, sgov_target - self.buffer_balance)
         if sgov_deficit <= 0: return []
@@ -153,17 +153,11 @@ class Portfolio:
                 trades.append((ticker, round(amount * weight, 2)))
             remaining -= amount
 
-        # Step 2: If we STILL need cash, pull exactly 50/50 from both buckets
+        # Step 2: If we STILL need cash, pull proportionally from Growth assets
         if remaining > 1.0:
-            pull_per_bucket = remaining / 2.0
-            
             for ticker in config.TICKERS_GROWTH:
                 weight = self.balances.get(ticker, 0) / self.growth_balance if self.growth_balance else 0
-                trades.append((ticker, round(pull_per_bucket * weight, 2)))
-                
-            for ticker in config.TICKERS_FI:
-                weight = self.balances.get(ticker, 0) / self.fi_balance if self.fi_balance else 0
-                trades.append((ticker, round(pull_per_bucket * weight, 2)))
+                trades.append((ticker, round(remaining * weight, 2)))
 
         logger.info('Buffer Refill SELL targets generated to raise $%.2f: %s', cash_to_raise, trades)
         return [(t, a) for t, a in trades if a > 0.50]

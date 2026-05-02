@@ -6,6 +6,7 @@
 from ib_insync import IB, Stock, MarketOrder
 import math
 import logging
+import time
 import config
 
 logger = logging.getLogger('spm.ibkr')
@@ -18,16 +19,27 @@ class IBKRClient:
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
-    def connect(self):
-        """Connect to TWS / IB Gateway. Raises on failure."""
-        if not self.ib.isConnected():
-            self.ib.connect(
-                config.IBKR_HOST,
-                config.IBKR_PORT,
-                clientId=config.IBKR_CLIENT_ID,
-                timeout=20,
-            )
-            logger.info('Connected to IBKR at %s:%s', config.IBKR_HOST, config.IBKR_PORT)
+    def connect(self, retries=3, delay=30):
+        """Connect to TWS / IB Gateway with retry logic."""
+        for attempt in range(1, retries + 1):
+            if not self.ib.isConnected():
+                try:
+                    self.ib.connect(
+                        config.IBKR_HOST,
+                        config.IBKR_PORT,
+                        clientId=config.IBKR_CLIENT_ID,
+                        timeout=20,
+                    )
+                    logger.info('Connected to IBKR at %s:%s', config.IBKR_HOST, config.IBKR_PORT)
+                    return # Success
+                except Exception as e:
+                    logger.warning('Connection attempt %d failed: %s', attempt, e)
+                    if attempt < retries:
+                        logger.info('Sleeping for %d seconds before retrying...', delay)
+                        time.sleep(delay)
+                    else:
+                        logger.error('Exhausted all connection retries.')
+                        raise # Bubble up to trigger the AlertManager email
 
     def disconnect(self):
         if self.ib.isConnected():
@@ -187,15 +199,15 @@ class IBKRClient:
             self.ib.waitOnUpdate(timeout=5)
             elapsed += 5
 
-        filled = trade.orderStatus.status == 'Filled'
-        if filled:
+        if trade.orderStatus.status == 'Filled':
             logger.info('FILLED: Sold $%.2f of %s', dollar_amount, symbol)
+            return True
         else:
-            logger.error(
-                'ORDER INCOMPLETE: %s status=%s after %ds',
-                symbol, trade.orderStatus.status, elapsed,
-            )
-        return filled
+            logger.error('ORDER INCOMPLETE: %s status=%s after %ds. Canceling order.', 
+                         symbol, trade.orderStatus.status, elapsed)
+            self.ib.cancelOrder(order) # Explicitly cancel the dangling order
+            self.ib.sleep(2) # Give IBKR a moment to process the cancellation
+            return False
 
     def buy_dollar_amount(self, symbol, dollar_amount, dry_run=False):
         """
@@ -224,9 +236,12 @@ class IBKRClient:
             self.ib.waitOnUpdate(timeout=5)
             elapsed += 5
 
-        filled = trade.orderStatus.status == 'Filled'
-        if filled:
+        if trade.orderStatus.status == 'Filled':
             logger.info('FILLED: Bought $%.2f of %s', dollar_amount, symbol)
+            return True
         else:
-            logger.error('ORDER INCOMPLETE: %s status=%s', symbol, trade.orderStatus.status)
-        return filled
+            logger.error('ORDER INCOMPLETE: %s status=%s after %ds. Canceling order.', 
+                         symbol, trade.orderStatus.status, elapsed)
+            self.ib.cancelOrder(order) # Explicitly cancel the dangling order
+            self.ib.sleep(2) # Give IBKR a moment to process the cancellation
+            return False

@@ -68,61 +68,47 @@ The SPM Latches Live: At its next scheduled run, the SPM will detect the USB tok
 
 ## Module Reference
 
-## config.py
+**config.py**
 
 All tunable parameters. Nothing is hardcoded elsewhere.
+* Synthetic Index Tickers: Ties the circuit breakers directly to the assets taking the risk (FBCG/AVUV).
+* SGOV buffer target: ($72,000)
+* Withdrawal baseline: ($5,000/month)
+* Circuit breaker thresholds: (-5% halt rebalancing, -7.5% enter crisis, +3% recovery)
+* Safety cap: ($15,000 max single trade — prevents bugs from liquidating the account)
 
-Synthetic Index Tickers: Ties the circuit breakers directly to the assets taking the risk (FBCG/AVUV).
+**ibkr_client.py**
 
-SGOV buffer target: ($72,000)
+Handles all communication with Interactive Brokers via the `ib_insync` library. 
+* `connect()` — Includes a 3-attempt retry loop to survive transient network drops or the mandatory 24-hour IB Gateway resets.
+* `get_synthetic_price_and_sma()` — Fetches historical bars for multiple tickers, securely aligns them by valid trading dates, and calculates the blended price and SMA.
+* `sell_dollar_amount()` / `buy_dollar_amount()` — Submits fractional-share market orders. Enforces the $15k safety cap. **Includes a 60-second timeout with automatic cancellation of dangling orders if the market halts or liquidity dries up.**
 
-Withdrawal baseline: ($5,000/month)
-
-Circuit breaker thresholds: (-5% halt rebalancing, -7.5% enter crisis, +3% recovery)
-
-Safety cap: ($15,000 max single trade — prevents bugs from liquidating the account)
-
-## ibkr_client.py
-
-Handles all communication with Interactive Brokers via the ib_insync library. Includes network timeout handling.
-
-get_synthetic_price_and_sma() — Fetches historical bars for multiple tickers, securely aligns them by valid trading dates, and calculates the blended price and SMA.
-
-sell_dollar_amount() / buy_dollar_amount() — Submits fractional-share market orders. Enforces the $15k safety cap.
-
-## strategy.py
+**strategy.py**
 
 Pure evaluation logic — no side effects. Receives synthetic market data, returns decisions for circuit breakers, inflation freezes, and November bonuses.
 
-## portfolio.py
+**portfolio.py**
 
 Tracks live balances and generates trade instructions.
+* `generate_rebalance_trades()` — Generates SELL orders if the 50/50 allocation drifts beyond the 5/25 safety bands. Generates BUY orders to deploy settled cash (T+1) into the underweight bucket.
+* `route_cash_raising()` — The withdrawal hierarchy: SGOV → Fixed Income → Growth.
+* `route_buffer_refill_sells()` — Calculates the exact monthly siphon from core assets to rebuild the SGOV buffer after a crisis.
 
-generate_rebalance_trades() — Generates SELL orders if the 50/50 allocation drifts beyond the 5/25 safety bands. Generates BUY orders to deploy settled cash (T+1) into the underweight bucket.
+**alert.py**
 
-route_cash_raising() — The withdrawal hierarchy: SGOV → Fixed Income → Growth.
+Sends notifications via email (full detail) and SMS (short summary via email-to-text gateway). Includes the critical 6-hour `send_heartbeat()` to act as a dead-man's switch if the host loses power.
 
-## alert.py
-
-Sends notifications via email (full detail) and SMS (short summary via email-to-text gateway). Includes the critical 6-hour send_heartbeat() to act as a dead-man's switch if the host loses power.
-
-## main.py
+**main.py**
 
 The orchestrator.
-
-Evaluates the USB Hardware Token (Latching logic).
-
-Connects to IBKR and snapshots portfolio balances.
-
-Fetches synthetic SMA data.
-
-Evaluates circuit breakers.
-
-Executes T+1 rebalance buys and drift-correction sells.
-
-Calculates and executes monthly cash-raising sells.
-
-Saves state, writes audit log, sends alerts.
+* Evaluates the USB Hardware Token (Latching logic).
+* Connects to IBKR and snapshots portfolio balances.
+* Fetches synthetic SMA data.
+* Evaluates circuit breakers.
+* Executes T+1 rebalance buys and drift-correction sells.
+* Calculates and executes monthly cash-raising sells.
+* **Atomically saves state** (guaranteed file integrity against power loss), writes audit log, and sends alerts.
 
 ## Execution Schedule
 
@@ -138,23 +124,23 @@ Directory Structure
 Plaintext
 
 /home/spm/
-├── spm/                      ← Source code
-├── spm_state.json            ← Persistent internal state
+├── spm/		Source code
+├── spm_state.json	Persistent internal state
 /var/log/spm/
-├── spm.log                   ← Human-readable log
-└── spm_audit.jsonl           ← Structured audit trail
+├── spm.log		Human-readable log
+└── spm_audit.jsonl	Structured audit trail
 /mnt/usb/
-└── spm_token.json            ← The Hardware Token
+└── spm_token.json	The Hardware Token
 
-Safety Features
+### Safety Features
 
-The Hardware Latch: The system defaults to inert paper-trading. It must be physically authorized via USB to execute real trades.
-
-Max Single Trade Cap ($15,000): No single order can exceed this amount.
-
-Fail Closed Architecture: If IBKR is offline, or the machine loses power, the script crashes cleanly and does nothing. The $6,000 baseline cash buffer in the account absorbs the impact of missed runs for the automated ACH pull.
-
-Structured Audit Trail: Every run appends timestamped JSON records covering portfolio snapshots, SMA values, trade orders, and state changes.
+* **The Hardware Latch:** The system defaults to inert paper-trading. It must be physically authorized via USB to execute real trades.
+* **Max Single Trade Cap ($15,000):** No single order can exceed this amount.
+* **Fail Closed Architecture:** If IBKR is permanently offline, or the machine loses power, the script crashes cleanly and does nothing. The baseline USD cash buffer in the account absorbs the impact of missed runs for the automated ACH pull.
+* **Network Resilience:** The connection protocol uses automatic retries with backoffs to gracefully wait out broker resets or transient internet drops.
+* **Dangling Order Protection:** If a trade fails to fill within 60 seconds (e.g., due to a market halt), the system explicitly cancels the live order to prevent it from executing hours later and destroying settlement assumptions.
+* **Atomic State Persistence:** The internal state file is written to a temporary location and atomically swapped, guaranteeing the system never wakes up to a corrupted or half-written memory state after an unexpected power loss. 
+* **Structured Audit Trail:** Every run appends timestamped JSON records covering portfolio snapshots, SMA values, trade orders, and state changes.
 
 What's Not Yet Built
 

@@ -58,9 +58,9 @@ CASH_TICKER = 'USD'
 
 # --- Buffer Refill Mechanics ---
 # After crisis mode recovery, wait 60 days before starting to refill SGOV.
-# Refill rate is 8.3% per year (approx 0.69% per month), taken from overweight.
+# Refill rate is 8.33% per month, designed to fully replenish the $72k buffer in exactly 12 months.
 BUFFER_REFILL_DELAY_DAYS = 60
-BUFFER_REFILL_ANNUAL_RATE = 0.083
+BUFFER_REFILL_MONTHLY_RATE = 0.0833
 
 # --- Circuit Breaker Thresholds ---
 # These compare the Synthetic Growth Index's current price vs. its own 200-day SMA.

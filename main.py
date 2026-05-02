@@ -1,3 +1,6 @@
+Here is the complete, updated main.py file incorporating the atomic state saving and the corrected buffer refill rate variable name.
+Python
+
 # main.py — Survivor Portfolio Manager (SPM)
 # ============================================
 # Top-level orchestrator.  Runs once per scheduled execution (weekly for
@@ -14,6 +17,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 
 import config
 from alert import AlertManager
@@ -75,9 +79,15 @@ def load_state():
 
 def save_state(state):
     os.makedirs(os.path.dirname(config.STATE_FILE), exist_ok=True)
-    with open(config.STATE_FILE, 'w') as f:
+    
+    # Write to a temporary file first
+    fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(config.STATE_FILE))
+    with os.fdopen(fd, 'w') as f:
         json.dump(state, f, indent=2)
-    logger.info('State saved to %s', config.STATE_FILE)
+    
+    # Atomically replace the old state file with the new one
+    os.replace(temp_path, config.STATE_FILE)
+    logger.info('State saved atomically to %s', config.STATE_FILE)
 
 
 def evaluate_hardware_token(state, cmd_line_dry_run):
@@ -248,7 +258,7 @@ def run_spm(cmd_line_dry_run=False):
             if refill_active:
                 refill_sells = portfolio.route_buffer_refill_sells(
                     sgov_target=state['sgov_target_dollars'],
-                    monthly_refill_rate=config.BUFFER_REFILL_ANNUAL_RATE
+                    monthly_refill_rate=config.BUFFER_REFILL_MONTHLY_RATE
                 )
                 if refill_sells:
                     audit_log('buffer_refill_sells', {'trades': refill_sells})

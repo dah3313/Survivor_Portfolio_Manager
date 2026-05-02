@@ -1,14 +1,14 @@
 Starting conditions
-portfolio size $700000
-Portfolio income generator allocation 30% FBCG, 30% AVUV, 25% PIMIX, 15% JPIE
-$72000 SHY buffer in same account but outside of core income generator.
+portfolio size $700000 estimated
+Portfolio income generator allocation 30% FBCG, 30% AVUV, 25% PYLD, 15% JPIE
+$72000 SGOV buffer in same account but outside of core income generator.
 $5000 monthly withdrawal
 Logic
 5/25 rebalancing checked once a week using a 200 day SMA lookback
-All withdrawals from PIMIX and JPIE proportionally
+All standard withdrawals from most overweight then PYLD and JPIE proportionally
 When Core portfolio down 5% via 200 day SMA lookback stop rebalancing
-When core portfolio down 7.5% via 200 day SMA lookback transition monthly withdrawals to SHY, when core portfolio recovers to 3% above transition point move withdrawals back to PIMIX/JPIE and begin slowly refilling SHY buffer using dividends.
-Even after transition to SHY buffer withdrawals use dividends from all funds to assist with monthly withdrawal, if SHY buffer fully funded buy shares in all core portfolio assets proportionally.
+When core portfolio down 7.5% via 200 day SMA lookback transition monthly withdrawals to SGOV, when core portfolio recovers to 3% above transition point move withdrawals back to PYLD/JPIE and begin slowly refilling SGOV buffer using most overweight in portfolio, then proportionally 
+Even after transition to SGOV buffer withdrawals use dividends from all funds to assist with monthly withdrawal, if SGOV buffer fully funded buy shares in all core portfolio assets proportionally.
 
 
 ------------------------------------------------------------------------------------------------
@@ -18,9 +18,9 @@ Here is the bulleted reference sheet for the complete withdrawal and rebalancing
 Initial State & Targets
 Core Portfolio: $700,000 baseline.
 
-Target Allocation: 50% Growth (FBCG/AVUV) / 50% Fixed Income (PIMIX/JPIE).
+Target Allocation: 50% Growth (FBCG/AVUV) / 50% Fixed Income (PYLD/JPIE).
 
-Crisis Buffer: $72,000 (SHY), held alongside but outside the core.
+Crisis Buffer: $72,000 (SGOV), held alongside but outside the core.
 
 Initial Withdrawal: $5,000/month (subject to inflation adjustments).
 
@@ -29,11 +29,11 @@ Primary (Normal Operations): Withdrawals are pulled proportionally from the Fixe
 
 Crisis Mode (200-day SMA Tripped): Withdrawals are pulled from the SHY buffer to protect core assets.
 
-Fallback 1 (SHY Depleted): Withdrawals revert to Fixed Income.
+Fallback 1 (SGOV Depleted): Withdrawals revert to Fixed Income.
 
 Fallback 2 (Last Resort): Withdrawals are pulled from the Growth bucket only if SHY and Fixed Income are entirely exhausted.
 
-2. Crisis Management (Evaluated Weekly via 200-day SMA)
+2. Crisis Management (Evaluated Weekly via Growth synthetic price index 200-day SMA)
 Halt Rebalance: If the Core Portfolio falls 5% below the 200-day SMA, all standard 5/25 rebalancing is frozen.
 
 Enter Crisis Mode: If the Core Portfolio falls 7.5% below the 200-day SMA, the monthly withdrawal sequence shifts to the SHY buffer.
@@ -76,7 +76,7 @@ Path A: Crisis Mode (200-day SMA tripped)
 
 Action: Sell the target dollar amount from the SHY position.
 
-Fallback: If the SHY balance is less than the target amount, sell all remaining SHY, and sell the difference proportionally from the Fixed Income bucket (PIMIX/JPIE).
+Fallback: If the SGOV balance is less than the target amount, sell all remaining SHY, and sell the difference proportionally from the Fixed Income bucket (PYLD/JPIE).
 
 Path B: Normal Operations (SMA healthy)
 
