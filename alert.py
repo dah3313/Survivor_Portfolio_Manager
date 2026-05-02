@@ -44,13 +44,29 @@ class AlertManager:
         body_short = f'{error_message} Check email for details.'
         self._dispatch(subject, body_full, body_short)
 
-    def send_heartbeat(self):
+def send_heartbeat(self, core_balances, weights, sgov_pct, sgov_status, days_to_payday):
         """
-        Called by a separate cron job or systemd timer to confirm the
-        host is alive. If this stops arriving, something is wrong with
-        the machine itself.
+        Formats the weekly heartbeat message. Excludes cash balance.
         """
-        self._dispatch('[SPM] Heartbeat', 'SPM host is alive and reachable.')
+        subject = '[SPM] Weekly Heartbeat'
+        
+        body = f"Upcoming Payday: {days_to_payday} days\n\n"
+        body += f"Buffer Status: {sgov_status.upper()} ({sgov_pct:.1f}% of Target)\n\n"
+        body += "Core ETF Balances:\n"
+        for ticker, balance in core_balances.items():
+            weight = weights.get(ticker, 0)
+            body += f"- {ticker}: ${balance:,.2f} ({weight:.1f}%)\n"
+            
+        self._dispatch(subject, body, body_short=f"Payday in {days_to_payday}d. Buffer: {sgov_status} ({sgov_pct:.1f}%).")
+
+    def send_buffer_alert(self, stage, details=""):
+        """
+        Triggers attention-grabbing alerts for buffer transitions.
+        Stages: 'ACTIVATED', 'DRAWDOWN', 'EMPTY_MOVING_TO_FI', 'FI_EMPTY_MOVING_TO_GROWTH', 'RECOVERY'
+        """
+        subject = f"⚠️ [SPM] BUFFER ALERT: {stage}"
+        body = f"The SPM Crisis Buffer has reached stage: {stage}\n\n{details}"
+        self._dispatch(subject, body)
 
     def send_custom(self, subject, body):
         """For ad-hoc alerts (e.g., buffer refill progress)."""

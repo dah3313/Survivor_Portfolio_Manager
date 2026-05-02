@@ -16,11 +16,11 @@ class Portfolio:
     def __init__(self, live_balances: dict):
         """
         live_balances: dict of {ticker: market_value_dollars} from IBKRClient.
-        The buffer ticker is present but tracked separately.
+        The buffer and cash tickers are present but tracked separately.
         """
         self.balances = live_balances
 
-        # Core buckets (buffer excluded)
+        # Core buckets (buffer and cash excluded)
         self.growth_balance = sum(
             self.balances.get(t, 0.0) for t in config.TICKERS_GROWTH
         )
@@ -29,14 +29,15 @@ class Portfolio:
         )
         self.core_balance = self.growth_balance + self.fi_balance
 
-        # Buffer — tracked but never mixed into core
+        # Buffer and Cash — tracked but never mixed into core
         self.buffer_balance = self.balances.get(config.TICKER_BUFFER, 0.0)
+        self.cash_balance = self.balances.get(config.CASH_TICKER, 0.0)
 
         logger.info(
             'Portfolio loaded — Core: $%.2f (Growth: $%.2f, FI: $%.2f), '
-            'Buffer: $%.2f',
+            'Buffer: $%.2f, Cash: $%.2f',
             self.core_balance, self.growth_balance, self.fi_balance,
-            self.buffer_balance,
+            self.buffer_balance, self.cash_balance,
         )
 
     # ------------------------------------------------------------------

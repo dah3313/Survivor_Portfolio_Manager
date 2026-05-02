@@ -40,32 +40,35 @@ class IBKRClient:
     def get_portfolio_state(self):
         """
         Returns a dict of {ticker: market_value} for every tracked ticker.
-        Buffer (SGOV) is included but the caller is responsible for keeping
-        it out of core balance calculations.
+        SGOV and USD Cash are included but must be isolated from core calculations.
         """
         all_tickers = config.CORE_TICKERS + [config.TICKER_BUFFER]
         state = {t: 0.0 for t in all_tickers}
+        state[config.CASH_TICKER] = 0.0 
+
         positions = self.ib.positions()
+        
+        # 1. Map positions
+        pos_map = {pos.contract.symbol: pos.position for pos in positions}
+        if 'USD' in pos_map: # Handle base currency
+            state[config.CASH_TICKER] = pos_map['USD']
 
-        for pos in positions:
-            symbol = pos.contract.symbol
-            if symbol not in state:
-                continue
-
-            contract = Stock(symbol, 'SMART', 'USD')
-            self.ib.qualifyContracts(contract)
-            ticker = self.ib.reqMktData(contract, '', False, False)
-            self.ib.sleep(2)  # let data populate
-
-            price = ticker.marketPrice()
-            if math.isnan(price):
-                price = ticker.close
-            if math.isnan(price):
-                logger.warning('No price available for %s — using 0', symbol)
-                price = 0.0
-
-            state[symbol] = pos.position * price
-            self.ib.cancelMktData(contract)
+        # 2. Qualify contracts and request bulk tickers
+        contracts = [Stock(symbol, 'SMART', 'USD') for symbol in all_tickers if symbol in pos_map]
+        if contracts:
+            self.ib.qualifyContracts(*contracts)
+            tickers = self.ib.reqTickers(*contracts) # Batch request, no sleep needed
+            
+            for ticker in tickers:
+                symbol = ticker.contract.symbol
+                price = ticker.marketPrice()
+                if math.isnan(price):
+                    price = ticker.close
+                if math.isnan(price):
+                    logger.warning('No price available for %s — using 0', symbol)
+                    price = 0.0
+                
+                state[symbol] = pos_map[symbol] * price
 
         logger.info('Portfolio state: %s', state)
         return state

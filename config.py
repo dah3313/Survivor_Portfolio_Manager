@@ -51,6 +51,17 @@ SMA_200_BAR = '1 week'
 SMA_12MO_PERIOD = '52 W'
 SMA_12MO_BAR = '1 week'
 
+# --- Cash Buffer (ACH Backup) ---
+# Maintained outside of rebalancing and core calculations.
+CASH_BUFFER_TARGET = 6000.0
+CASH_TICKER = 'USD'
+
+# --- Buffer Refill Mechanics ---
+# After crisis mode recovery, wait 60 days before starting to refill SGOV.
+# Refill rate is 8.3% per year (approx 0.69% per month), taken from overweight.
+BUFFER_REFILL_DELAY_DAYS = 60
+BUFFER_REFILL_ANNUAL_RATE = 0.083
+
 # --- Circuit Breaker Thresholds ---
 # These compare SPY's current price vs. its own 200-day SMA.
 # -5%: halt all rebalancing
