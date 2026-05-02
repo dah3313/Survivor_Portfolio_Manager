@@ -36,18 +36,18 @@ The entire system is secured by a **Hardware Token Protocol** (a physical USB dr
 * The active IPM writes the inflation-adjusted withdrawal baseline to this token continuously. 
 * The dormant SPM requires this token to activate live trading. 
 
-┌─────────────────────────────────────────────────┐
-│  main.py — Orchestrator                         │
-│  Validates USB Token, coordinates modules,      │
-│  and writes to an append-only audit trail.      │
-├────────────┬────────────┬───────────┬───────────┤
-│ strategy.py│portfolio.py│ibkr_client│  alert.py │
-│ Synthetic  │ Balance    │ IBKR API  │ Email/SMS │
-│ index eval,│ tracking,  │ routing   │ heartbeat │
-│ safeguards │ T+1 trades │           │ alerts    │
-├────────────┴────────────┴───────────┴───────────┤
-│  config.py — All constants, thresholds, tickers │
-└─────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────┐
+  │  main.py — Orchestrator                         │
+  │  Validates USB Token, coordinates modules,      │
+  │  and writes to an append-only audit trail.      │
+  ├────────────┬────────────┬───────────┬───────────┤
+  │ strategy.py│portfolio.py│ibkr_client│  alert.py │
+  │ Synthetic  │ Balance    │ IBKR API  │ Email/SMS │
+  │ index eval,│ tracking,  │ routing   │ heartbeat │
+  │ safeguards │ T+1 trades │           │ alerts    │
+  ├────────────┴────────────┴───────────┴───────────┤
+  │  config.py — All constants, thresholds, tickers │
+  └─────────────────────────────────────────────────┘
 
 #The Switchover Protocol (In Case of husband passing)
 
