@@ -49,7 +49,7 @@ The entire system is secured by a **Hardware Token Protocol** (a physical USB dr
   │  config.py — All constants, thresholds, tickers │
   └─────────────────────────────────────────────────┘
 
-#The Switchover Protocol (In Case of husband passing)
+# The Switchover Protocol (In Case of husband passing)
 
 There are no scripts to run, no SSH keys to manage, and no remote desktops to navigate. The switchover is entirely physical.
 
@@ -68,7 +68,7 @@ The SPM Latches Live: At its next scheduled run, the SPM will detect the USB tok
 
 ## Module Reference
 
-# config.py
+## config.py
 
 All tunable parameters. Nothing is hardcoded elsewhere.
 
@@ -82,7 +82,7 @@ Circuit breaker thresholds: (-5% halt rebalancing, -7.5% enter crisis, +3% recov
 
 Safety cap: ($15,000 max single trade — prevents bugs from liquidating the account)
 
-# ibkr_client.py
+## ibkr_client.py
 
 Handles all communication with Interactive Brokers via the ib_insync library. Includes network timeout handling.
 
@@ -90,10 +90,11 @@ get_synthetic_price_and_sma() — Fetches historical bars for multiple tickers, 
 
 sell_dollar_amount() / buy_dollar_amount() — Submits fractional-share market orders. Enforces the $15k safety cap.
 
-# strategy.py
+## strategy.py
 
 Pure evaluation logic — no side effects. Receives synthetic market data, returns decisions for circuit breakers, inflation freezes, and November bonuses.
-portfolio.py
+
+## portfolio.py
 
 Tracks live balances and generates trade instructions.
 
@@ -101,10 +102,11 @@ generate_rebalance_trades() — Generates SELL orders if the 50/50 allocation dr
 
 route_cash_raising() — The withdrawal hierarchy: SGOV → Fixed Income → Growth.
 
-# alert.py
+## alert.py
 
 Sends notifications via email (full detail) and SMS (short summary via email-to-text gateway). Includes the critical 6-hour send_heartbeat() to act as a dead-man's switch if the host loses power.
-main.py
+
+## main.py
 
 The orchestrator.
 
