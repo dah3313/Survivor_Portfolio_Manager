@@ -1,6 +1,3 @@
-Here is the complete, updated main.py file incorporating the atomic state saving and the corrected buffer refill rate variable name.
-Python
-
 # main.py — Survivor Portfolio Manager (SPM)
 # ============================================
 # Top-level orchestrator.  Runs once per scheduled execution (weekly for
@@ -18,6 +15,8 @@ import logging
 import os
 import sys
 import tempfile
+
+from ib_insync import Stock, MarketOrder
 
 import config
 from alert import AlertManager
@@ -60,21 +59,21 @@ def audit_log(event_type, data):
 
 
 # ------------------------------------------------------------------
-# Persistent state & Hardware Token
+# Persistent state, Dynamic Config & Hardware Token
 # ------------------------------------------------------------------
 def load_state():
     if os.path.exists(config.STATE_FILE):
         with open(config.STATE_FILE, 'r') as f:
             return json.load(f)
     return {
-        'current_monthly_withdrawal': config.BASELINE_MONTHLY_WITHDRAWAL,
+        'current_monthly_withdrawal': 0.0,
         'in_buffer_transition': False,
         'transition_price': None,
         'last_november_growth_value': 0.0,
         'is_live_latched': False,
         'recovery_date': None,       
-        'sgov_target_dollars': config.BUFFER_TARGET_DOLLARS,
-        'last_idle_heartbeat_month': 0  # NEW: Tracks the monthly dormant ping
+        'sgov_target_dollars': 0.0,
+        'last_idle_heartbeat_month': 0  
     }
 
 def save_state(state):
@@ -89,59 +88,115 @@ def save_state(state):
     os.replace(temp_path, config.STATE_FILE)
     logger.info('State saved atomically to %s', config.STATE_FILE)
 
+def apply_dynamic_config(state):
+    """Injects dynamically derived targets into config so downstream modules use them."""
+    withdrawal = state.get('current_monthly_withdrawal', 0.0)
+    if withdrawal > 0:
+        transaction_buffer = getattr(config, 'CASH_TRANSACTION_BUFFER', 1000.0)
+        config.CASH_BUFFER_TARGET = withdrawal + transaction_buffer
+        logger.info("Dynamic config applied: CASH_BUFFER_TARGET = $%.2f", config.CASH_BUFFER_TARGET)
 
 def evaluate_hardware_token(state, cmd_line_dry_run):
     """
     Evaluates the presence of the USB token.
-    Latches the system to LIVE mode if the token is found.
-    Returns: (updated_state, effective_dry_run_flag)
+    Returns: (updated_state, effective_dry_run_flag, needs_day_one_init_flag)
     """
     token_path = '/mnt/usb/spm_token.json'
 
-    # If the user passed --dry-run via command line, honor it regardless of latch.
     if cmd_line_dry_run:
         logger.info("Command line --dry-run overrides hardware token logic.")
-        return state, True
+        return state, True, False
 
     # SCENARIO A: Already latched from a previous run.
     if state.get('is_live_latched', False):
-        logger.info("System is LIVE LATCHED from a previous token insertion.")
-        return state, False 
+        logger.info("System is LIVE LATCHED from a previous day.")
+        return state, False, False 
 
-    # SCENARIO B: Not latched, but the token has been inserted!
+    # SCENARIO B: Not latched, but the physical token has been inserted!
     if os.path.exists(token_path):
-        try:
-            with open(token_path, 'r') as f:
-                token_data = json.load(f)
-            
-            # 1. Ingest the baseline data from the IPM's token
-            state['current_monthly_withdrawal'] = token_data.get(
-                'current_monthly_withdrawal', 
-                state['current_monthly_withdrawal']
-            )
-            state['last_november_growth_value'] = token_data.get(
-                'last_november_growth_value', 
-                state.get('last_november_growth_value', 0.0)
-            )
-            state['sgov_target_dollars'] = token_data.get(
-                'sgov_target_dollars', 
-                state.get('sgov_target_dollars', config.BUFFER_TARGET_DOLLARS)
-            )
-            
-            # 2. LATCH THE SYSTEM
-            state['is_live_latched'] = True
-            
-            logger.critical("*** HARDWARE TOKEN DETECTED. SYSTEM LATCHED TO LIVE TRADING. ***")
-            audit_log('system_latched', {'token_data': token_data})
-            return state, False # False means live execution
-
-        except Exception as e:
-            logger.error("USB token found but unreadable! Defaulting to dry-run. Error: %s", e)
-            return state, True # Force dry-run for safety
+        logger.critical("*** HARDWARE TOKEN DETECTED FOR THE FIRST TIME. ***")
+        return state, False, True  # Triggers Day 1 Reallocation
 
     # SCENARIO C: Not latched, no token. Sentinel mode.
     logger.info("No hardware token found. Forcing DRY-RUN mode.")
-    return state, True
+    return state, True, False
+
+
+# ------------------------------------------------------------------
+# Day 1 Initialization (The Great Reallocation)
+# ------------------------------------------------------------------
+def execute_day_one_initialization(client, state):
+    logger.critical("=== INITIATING DAY 1 PORTFOLIO REALLOCATION ===")
+    audit_log('day_one_init_start', {})
+    
+    # 1. Liquidate non-approved legacy assets
+    positions = client.ib.positions()
+    approved_symbols = config.CORE_TICKERS + [config.TICKER_BUFFER, getattr(config, 'CASH_TICKER', 'USD')]
+    
+    for pos in positions:
+        symbol = pos.contract.symbol
+        qty = pos.position
+        if symbol not in approved_symbols and qty > 0:
+            logger.info('Day 1: Liquidating %.4f shares of legacy asset %s', qty, symbol)
+            contract = Stock(symbol, 'SMART', 'USD')
+            client.ib.qualifyContracts(contract)
+            trade = client.ib.placeOrder(contract, MarketOrder('SELL', qty))
+            
+            # Wait for liquidation to clear
+            elapsed = 0
+            while not trade.isDone() and elapsed < 60:
+                client.ib.waitOnUpdate(timeout=2)
+                elapsed += 2
+                
+    logger.info("Day 1: Liquidations complete. Sleeping 5s for internal settlement reflection.")
+    client.ib.sleep(5)
+    
+    # 2. Calculate Total Net Liquidation Value (TNLV) and Dynamic Targets
+    tnlv = 0.0
+    for item in client.ib.accountSummary():
+        if item.tag == 'NetLiquidation':
+            tnlv = float(item.value)
+            break
+            
+    if tnlv <= 0.0:
+        logger.warning("Could not fetch NetLiquidation. Falling back to portfolio sum.")
+        state_bals = client.get_portfolio_state()
+        tnlv = sum(state_bals.values())
+        
+    logger.info('Day 1: Total Net Liquidation Value evaluated at $%.2f', tnlv)
+    
+    withdrawal_rate = getattr(config, 'INITIAL_WITHDRAWAL_RATE', 0.085)
+    buffer_months = getattr(config, 'INITIAL_BUFFER_MONTHS', 18)
+    
+    monthly_withdrawal = (tnlv * withdrawal_rate) / 12.0
+    sgov_target = monthly_withdrawal * buffer_months
+    
+    logger.info(
+        'Day 1 Targets -> Withdrawal: $%.2f/mo | SGOV Buffer: $%.2f', 
+        monthly_withdrawal, sgov_target
+    )
+    
+    # 3. Save to Persistent State
+    state['current_monthly_withdrawal'] = monthly_withdrawal
+    state['sgov_target_dollars'] = sgov_target
+    state['is_live_latched'] = True
+    
+    # Trick the system into thinking we just finished a crisis so the 'Peacetime'
+    # buffer refill logic aggressively buys SGOV and the Core with the newly settled cash.
+    delay_days = getattr(config, 'BUFFER_REFILL_DELAY_DAYS', 60)
+    past_date = datetime.datetime.now() - datetime.timedelta(days=delay_days + 5)
+    state['recovery_date'] = past_date.isoformat()
+    
+    save_state(state)
+    apply_dynamic_config(state)
+    
+    audit_log('day_one_init_complete', {
+        'tnlv': tnlv,
+        'monthly_withdrawal': monthly_withdrawal,
+        'sgov_target': sgov_target
+    })
+    
+    return state
 
 
 # ------------------------------------------------------------------
@@ -149,9 +204,9 @@ def evaluate_hardware_token(state, cmd_line_dry_run):
 # ------------------------------------------------------------------
 def run_spm(cmd_line_dry_run=False):
     state = load_state()
+    apply_dynamic_config(state)
     
-    # Check the token and determine actual execution mode
-    state, effective_dry_run = evaluate_hardware_token(state, cmd_line_dry_run)
+    state, effective_dry_run, needs_day_one_init = evaluate_hardware_token(state, cmd_line_dry_run)
 
     client = IBKRClient()
     now = datetime.datetime.now()
@@ -163,6 +218,10 @@ def run_spm(cmd_line_dry_run=False):
     client.connect()
 
     try:
+        if needs_day_one_init:
+            state = execute_day_one_initialization(client, state)
+            effective_dry_run = False
+            
         # ---- 1. Gather live data ----
         live_balances = client.get_portfolio_state()
         portfolio = Portfolio(live_balances)
@@ -176,14 +235,12 @@ def run_spm(cmd_line_dry_run=False):
         })
 
         # ---- 2. Fetch synthetic proxy index SMA data ----
-        # 200-day SMA (for circuit breakers)
         proxy_price_200, sma_200 = client.get_synthetic_price_and_sma(
             config.SYNTHETIC_INDEX_TICKERS,
             config.SMA_200_PERIOD,
             config.SMA_200_BAR,
         )
 
-        # 12-month SMA (for inflation freeze — only needed in November)
         proxy_price_12mo, sma_12mo = client.get_synthetic_price_and_sma(
             config.SYNTHETIC_INDEX_TICKERS,
             config.SMA_12MO_PERIOD,
@@ -215,9 +272,8 @@ def run_spm(cmd_line_dry_run=False):
             audit_log('recovery_started', {'date': state['recovery_date']})
         
         if not state['in_buffer_transition'] and force_buffer:
-            state['recovery_date'] = None # Clear the clock if we dip back into crisis
+            state['recovery_date'] = None
 
-        # Persist transition state
         state['in_buffer_transition'] = strategy.in_buffer_transition
         state['transition_price'] = strategy.transition_price
 
@@ -229,17 +285,16 @@ def run_spm(cmd_line_dry_run=False):
         })
 
         # ---- 4. Weekly Rebalancing & Refill Logic ----
-        
-        # Determine if Refill Mode is active
         refill_active = False
         if not strategy.in_buffer_transition and state.get('recovery_date'):
             recovery_date = datetime.datetime.fromisoformat(state['recovery_date'])
             days_since_recovery = (now - recovery_date).days
-            if days_since_recovery >= config.BUFFER_REFILL_DELAY_DAYS:
+            delay_days = getattr(config, 'BUFFER_REFILL_DELAY_DAYS', 60)
+            if days_since_recovery >= delay_days:
                 refill_active = True
 
         if not halt_rebalancing:
-            # 4a. Execute Drift Sells & Cash Deployment Buys (SGOV gets first claim if refill_active)
+            # 4a. Execute Drift Sells & Cash Deployment Buys
             rebal_trades = portfolio.generate_rebalance_trades(
                 sgov_target=state['sgov_target_dollars'], 
                 refill_active=refill_active
@@ -254,11 +309,12 @@ def run_spm(cmd_line_dry_run=False):
                         logger.info('Rebalance/Refill BUY: %s $%.2f', ticker, amount)
                         client.buy_dollar_amount(ticker, amount, dry_run=effective_dry_run)
 
-            # 4b. Execute Buffer Refill Sells (if we need to raise more cash for SGOV)
+            # 4b. Execute Buffer Refill Sells
             if refill_active:
+                refill_rate = getattr(config, 'BUFFER_REFILL_MONTHLY_RATE', 0.0833)
                 refill_sells = portfolio.route_buffer_refill_sells(
                     sgov_target=state['sgov_target_dollars'],
-                    monthly_refill_rate=config.BUFFER_REFILL_MONTHLY_RATE
+                    monthly_refill_rate=refill_rate
                 )
                 if refill_sells:
                     audit_log('buffer_refill_sells', {'trades': refill_sells})
@@ -273,67 +329,55 @@ def run_spm(cmd_line_dry_run=False):
         target_withdrawal = state['current_monthly_withdrawal']
 
         # ---- 6. November annual review ----
-        if current_month == config.BONUS_EVAL_MONTH:
+        if current_month == getattr(config, 'BONUS_EVAL_MONTH', 11):
             logger.info('--- November Annual Review ---')
 
-            # A. Inflation adjustment (unless frozen)
-            freeze = strategy.evaluate_inflation_freeze(
-                proxy_price_12mo, sma_12mo,
-            )
+            freeze = strategy.evaluate_inflation_freeze(proxy_price_12mo, sma_12mo)
             if freeze:
                 logger.info('Inflation adjustment FROZEN (market down vs 12mo SMA)')
                 audit_log('inflation_frozen', {})
             else:
                 old_withdrawal = state['current_monthly_withdrawal']
-                state['current_monthly_withdrawal'] *= (1 + config.ANNUAL_INFLATION_RATE)
+                state['current_monthly_withdrawal'] *= (1 + getattr(config, 'ANNUAL_INFLATION_RATE', 0.03))
                 target_withdrawal = state['current_monthly_withdrawal']
-                logger.info(
-                    'Inflation adjusted: $%.2f → $%.2f',
-                    old_withdrawal, target_withdrawal,
-                )
-                audit_log('inflation_adjusted', {
-                    'old': old_withdrawal,
-                    'new': target_withdrawal,
-                })
+                logger.info('Inflation adjusted: $%.2f → $%.2f', old_withdrawal, target_withdrawal)
+                audit_log('inflation_adjusted', {'old': old_withdrawal, 'new': target_withdrawal})
 
-            # B. Special dividend
-            prev_growth = state['last_november_growth_value']
+            prev_growth = state.get('last_november_growth_value', 0.0)
             if prev_growth > 0:
-                bonus = strategy.evaluate_november_bonus(
-                    portfolio.growth_balance, prev_growth,
-                )
+                bonus = strategy.evaluate_november_bonus(portfolio.growth_balance, prev_growth)
                 if bonus > 0:
                     target_withdrawal += bonus
                     logger.info('November bonus: +$%.2f', bonus)
                     audit_log('november_bonus', {'bonus': bonus})
 
-            # Save this year's growth value for next November
             state['last_november_growth_value'] = portfolio.growth_balance
 
         # ---- 7. Execute cash raising ----
-        logger.info('Raising $%.2f for withdrawal', target_withdrawal)
-        sell_orders = portfolio.route_cash_raising(
-            target_withdrawal, force_buffer=force_buffer,
-        )
+        if target_withdrawal > 0:
+            logger.info('Raising $%.2f for withdrawal', target_withdrawal)
+            sell_orders = portfolio.route_cash_raising(
+                target_withdrawal, force_buffer=force_buffer,
+            )
 
-        audit_log('cash_raising', {
-            'target': target_withdrawal,
-            'force_buffer': force_buffer,
-            'orders': sell_orders,
-        })
+            audit_log('cash_raising', {
+                'target': target_withdrawal,
+                'force_buffer': force_buffer,
+                'orders': sell_orders,
+            })
 
-        for ticker, amount in sell_orders:
-            logger.info('SELL %s for $%.2f', ticker, amount)
-            success = client.sell_dollar_amount(ticker, amount, dry_run=effective_dry_run)
-            if not success:
-                logger.error('Order may not have filled: %s $%.2f', ticker, amount)
+            for ticker, amount in sell_orders:
+                logger.info('SELL %s for $%.2f', ticker, amount)
+                success = client.sell_dollar_amount(ticker, amount, dry_run=effective_dry_run)
+                if not success:
+                    logger.error('Order may not have filled: %s $%.2f', ticker, amount)
 
         # ---- 8. Save state ----
         save_state(state)
         audit_log('run_complete', {'state': state})
         logger.info('========== SPM RUN COMPLETE ==========')
 
-        return effective_dry_run  # return the mode to the caller for accurate alerting
+        return effective_dry_run
 
     finally:
         client.disconnect()
@@ -362,27 +406,23 @@ def main():
         current_month = datetime.datetime.now().month
 
         if is_latched:
-            # If the system is live, send the standard frequent heartbeat
             alerter.send_custom(
                 subject="[SPM] Heartbeat — LIVE LATCHED",
                 body="The SPM is actively managing the portfolio."
             )
         else:
-            # If the system is idle, only text once per month
             last_month = state.get('last_idle_heartbeat_month', 0)
             if current_month != last_month:
                 alerter.send_custom(
                     subject="[SPM] Monthly Sentinel Check — IDLE",
                     body="Hardware and network are functional. SPM is dormant."
                 )
-                # Update state so it stays quiet until next month
                 state['last_idle_heartbeat_month'] = current_month
                 save_state(state)
         return
 
     try:
         effective_dry_run = run_spm(cmd_line_dry_run=args.dry_run)
-        
         mode_str = ' [DRY RUN / NO TOKEN]' if effective_dry_run else ' [LIVE LATCHED]'
         alerter.send_success(f'SPM executed successfully.{mode_str}')
         

@@ -21,7 +21,7 @@ CORE_TICKERS = TICKERS_GROWTH + TICKERS_FI
 # Crisis buffer — held in the same account but tracked separately.
 # NOT included in core balance or drift calculations.
 TICKER_BUFFER = 'SGOV'
-BUFFER_TARGET_DOLLARS = 72_000.0
+BUFFER_TARGET_DOLLARS = 90_000.0
 
 # Target allocation within the core (must sum to 1.0)
 TARGET_ALLOCATION_GROWTH = 0.50
@@ -79,7 +79,7 @@ INFLATION_FREEZE_THRESHOLD = -0.05
 # --- November Special Dividend ---
 BONUS_EVAL_MONTH = 11
 BONUS_GROWTH_YOY_THRESHOLD = 0.25   # 25% YoY growth bucket return
-BONUS_EXCESS_TAKE_RATE = 0.20       # take 20% of excess above threshold
+BONUS_EXCESS_TAKE_RATE = 0.05       # take 5% of excess above threshold
 
 # --- Safety Rails ---
 # Maximum dollar amount a single trade can execute. Prevents a bug from
