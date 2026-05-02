@@ -49,86 +49,86 @@ The entire system is secured by a **Hardware Token Protocol** (a physical USB dr
 │  config.py — All constants, thresholds, tickers │
 └─────────────────────────────────────────────────┘
 
-The Switchover Protocol (In Case of husband passing)
+#The Switchover Protocol (In Case of husband passing)
 
 There are no scripts to run, no SSH keys to manage, and no remote desktops to navigate. The switchover is entirely physical.
 
-    Locate the active IPM mini-PC (the black box) and the dormant SPM mini-PC (the silver box). Both should be powered on and connected to the internet.
+Locate the active IPM mini-PC (the black box) and the dormant SPM mini-PC (the silver box). Both should be powered on and connected to the internet.
 
-    Unplug the USB thumb drive from the IPM box.
+Unplug the USB thumb drive from the IPM box.
 
-    Plug the USB thumb drive into the SPM box.
+Plug the USB thumb drive into the SPM box.
 
 What happens under the hood:
 
-    The IPM (Primary Porfolio Manager) Fails Closed: At its next scheduled run, the IPM will notice the USB token is missing. It will instantly crash, halting all growth-phase trades and silencing its weekly heartbeat text.
+The IPM (Primary Porfolio Manager) Fails Closed: At its next scheduled run, the IPM will notice the USB token is missing. It will instantly crash, halting all growth-phase trades and silencing its weekly heartbeat text.
 
-    The SPM Latches Live: At its next scheduled run, the SPM will detect the USB token. It reads the exact, current inflation-adjusted withdrawal amount from the token, saves it to its permanent internal state (is_live_latched = True), and immediately takes over management of the Roth IRA.
+The SPM Latches Live: At its next scheduled run, the SPM will detect the USB token. It reads the exact, current inflation-adjusted withdrawal amount from the token, saves it to its permanent internal state (is_live_latched = True), and immediately takes over management of the Roth IRA.
 
 
-Module Reference
+## Module Reference
 
-config.py
+# config.py
 
 All tunable parameters. Nothing is hardcoded elsewhere.
 
-    Synthetic Index Tickers: Ties the circuit breakers directly to the assets taking the risk (FBCG/AVUV).
+Synthetic Index Tickers: Ties the circuit breakers directly to the assets taking the risk (FBCG/AVUV).
 
-    SGOV buffer target: ($72,000)
+SGOV buffer target: ($72,000)
 
-    Withdrawal baseline: ($5,000/month)
+Withdrawal baseline: ($5,000/month)
 
-    Circuit breaker thresholds: (-5% halt rebalancing, -7.5% enter crisis, +3% recovery)
+Circuit breaker thresholds: (-5% halt rebalancing, -7.5% enter crisis, +3% recovery)
 
-    Safety cap: ($15,000 max single trade — prevents bugs from liquidating the account)
+Safety cap: ($15,000 max single trade — prevents bugs from liquidating the account)
 
-ibkr_client.py
+# ibkr_client.py
 
 Handles all communication with Interactive Brokers via the ib_insync library. Includes network timeout handling.
 
-    get_synthetic_price_and_sma() — Fetches historical bars for multiple tickers, securely aligns them by valid trading dates, and calculates the blended price and SMA.
+get_synthetic_price_and_sma() — Fetches historical bars for multiple tickers, securely aligns them by valid trading dates, and calculates the blended price and SMA.
 
-    sell_dollar_amount() / buy_dollar_amount() — Submits fractional-share market orders. Enforces the $15k safety cap.
+sell_dollar_amount() / buy_dollar_amount() — Submits fractional-share market orders. Enforces the $15k safety cap.
 
-strategy.py
+# strategy.py
 
 Pure evaluation logic — no side effects. Receives synthetic market data, returns decisions for circuit breakers, inflation freezes, and November bonuses.
 portfolio.py
 
 Tracks live balances and generates trade instructions.
 
-    generate_rebalance_trades() — Generates SELL orders if the 50/50 allocation drifts beyond the 5/25 safety bands. Generates BUY orders to deploy settled cash (T+1) into the underweight bucket.
+generate_rebalance_trades() — Generates SELL orders if the 50/50 allocation drifts beyond the 5/25 safety bands. Generates BUY orders to deploy settled cash (T+1) into the underweight bucket.
 
-    route_cash_raising() — The withdrawal hierarchy: SGOV → Fixed Income → Growth.
+route_cash_raising() — The withdrawal hierarchy: SGOV → Fixed Income → Growth.
 
-alert.py
+# alert.py
 
 Sends notifications via email (full detail) and SMS (short summary via email-to-text gateway). Includes the critical 6-hour send_heartbeat() to act as a dead-man's switch if the host loses power.
 main.py
 
 The orchestrator.
 
-    Evaluates the USB Hardware Token (Latching logic).
+Evaluates the USB Hardware Token (Latching logic).
 
-    Connects to IBKR and snapshots portfolio balances.
+Connects to IBKR and snapshots portfolio balances.
 
-    Fetches synthetic SMA data.
+Fetches synthetic SMA data.
 
-    Evaluates circuit breakers.
+Evaluates circuit breakers.
 
-    Executes T+1 rebalance buys and drift-correction sells.
+Executes T+1 rebalance buys and drift-correction sells.
 
-    Calculates and executes monthly cash-raising sells.
+Calculates and executes monthly cash-raising sells.
 
-    Saves state, writes audit log, sends alerts.
+Saves state, writes audit log, sends alerts.
 
-Execution Schedule
+## Execution Schedule
 
 The program is run by systemd timers on a dedicated Linux host.
-Timer	Frequency	Command	Purpose
-Weekly check	Every Monday 9:30 AM ET	python main.py	Evaluate drift, circuit breakers, and deploy settled T+1 cash.
-Monthly withdrawal	3 business days before ACH date	python main.py	Raise cash for the monthly transfer.
-Heartbeat	Every 6 hours	python main.py --heartbeat	Confirm the host is alive and report Latch Status.
+Timer Frequency, Command & Purpose
+Weekly check Every Monday 9:30 AM ET - Evaluate drift, circuit breakers, and deploy settled T+1 cash.
+Monthly withdrawal 3 business days before ACH date - Raise cash for the monthly transfer.	
+Heartbeat Every 6 hours	--heartbeat - Confirm the host is alive and report Latch Status.
 
 Note: Without the USB token inserted, the Weekly and Monthly runs default to Dry-Run (paper) mode.
 Deployment & State Integrity
@@ -146,19 +146,19 @@ Plaintext
 
 Safety Features
 
-    The Hardware Latch: The system defaults to inert paper-trading. It must be physically authorized via USB to execute real trades.
+The Hardware Latch: The system defaults to inert paper-trading. It must be physically authorized via USB to execute real trades.
 
-    Max Single Trade Cap ($15,000): No single order can exceed this amount.
+Max Single Trade Cap ($15,000): No single order can exceed this amount.
 
-    Fail Closed Architecture: If IBKR is offline, or the machine loses power, the script crashes cleanly and does nothing. The $6,000 baseline cash buffer in the account absorbs the impact of missed runs for the automated ACH pull.
+Fail Closed Architecture: If IBKR is offline, or the machine loses power, the script crashes cleanly and does nothing. The $6,000 baseline cash buffer in the account absorbs the impact of missed runs for the automated ACH pull.
 
-    Structured Audit Trail: Every run appends timestamped JSON records covering portfolio snapshots, SMA values, trade orders, and state changes.
+Structured Audit Trail: Every run appends timestamped JSON records covering portfolio snapshots, SMA values, trade orders, and state changes.
 
 What's Not Yet Built
 
-    Systemd unit files and timers: The Linux service definitions for both SPM and the heartbeat timer.
+Systemd unit files and timers: The Linux service definitions for both SPM and the heartbeat timer.
 
-    Headless Gateway Wrapper: Configuration of IBC (IBController) to handle Interactive Brokers' mandatory 24-hour resets and headless authentication.
+Headless Gateway Wrapper: Configuration of IBC (IBController) to handle Interactive Brokers' mandatory 24-hour resets and headless authentication.
 
 Financial Context
 
